@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "esp_wifi.h"
 #include "esp_event_loop.h"
 #include "esp_log.h"
@@ -253,7 +254,7 @@ static void http_get_task(void *pvParameters)
     int s, r;
     char recv_buf[64];
 
-    while(1) {
+    do {
         /* Wait for the callback to set the CONNECTED_BIT in the
            event group.
         */
@@ -361,18 +362,51 @@ static void http_get_task(void *pvParameters)
 
         ESP_LOGI(TAG, "... done reading from socket. Last read return=%d errno=%d\r\n", r, errno);
         close(s);
-        for(int countdown = 10; countdown >= 0; countdown--) {
-            ESP_LOGI(TAG, "%d... ", countdown);
-            vTaskDelay(1000 / portTICK_PERIOD_MS);
-        }
-        ESP_LOGI(TAG, "Starting again!");
+    } while (0);
+}
+
+#define SWITCH_PIN 23
+
+static void switch_poll_task(void *pvParameters)
+{
+  // Configure GPIO for input
+  gpio_config_t io_conf;
+  io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+  io_conf.mode = GPIO_MODE_INPUT;
+  io_conf.pin_bit_mask = (1 << SWITCH_PIN);
+  io_conf.pull_down_en = 0;
+  io_conf.pull_up_en = 1;
+  gpio_config(&io_conf);
+
+  int level = gpio_get_level(SWITCH_PIN);
+
+  ESP_LOGI(TAG, "Initial switch status: %d", level);
+  while (1)
+  {
+    // Read new level
+    int new_level = gpio_get_level(SWITCH_PIN);
+
+    // Debounce by waiting 100ms
+    if (new_level != level)
+    {
+      ESP_LOGI(TAG, "Switch changed to: %d", new_level);
+      vTaskDelay(100 / portTICK_PERIOD_MS);
+      level = gpio_get_level(SWITCH_PIN);
+      if (level == new_level)
+      {
+        ESP_LOGI(TAG, "Switching state to: %d", level);
+        xTaskCreate(&http_get_task, "ws_req_task", 4096, NULL, 5, NULL);
+      }
     }
+
+    esp_task_wdt_feed();
+  }
 }
 
 void app_main()
 {
     ESP_ERROR_CHECK( nvs_flash_init() );
     initialise_wifi();
-    xTaskCreate(&http_get_task, "http_get_task", 4096, NULL, 5, NULL);
+    xTaskCreate(&switch_poll_task, "switch_poll_task", 4096, NULL, 5, NULL);
 }
 
