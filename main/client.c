@@ -40,20 +40,23 @@ static EventGroupHandle_t wifi_event_group;
    to the AP with an IP? */
 const int CONNECTED_BIT = BIT0;
 
+#define QUOTE_(str) #str
+#define QUOTE(str) QUOTE_(str)
+
 /* Constants that aren't configurable in menuconfig */
-#define WEB_SERVER "demos.kaazing.com"
-#define WEB_PORT 80
-#define WEB_URL "/echo"
+#define WEB_SERVER CONFIG_WEB_SERVER
+#define WEB_PORT CONFIG_WEB_PORT
+#define WEB_URL CONFIG_WEB_URL
 
 static const char *TAG = "lightswitch";
 
 static const char *REQUEST = "GET " WEB_URL " HTTP/1.1\r\n"
-    "Host: "WEB_SERVER"\r\n"
+    "Host: " WEB_SERVER ":" QUOTE(WEB_PORT) "\r\n"
     "Upgrade: websocket\r\n"
     "Connection: Upgrade\r\n"
-    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-    "Origin: http://example.com\r\n"
-    "Sec-WebSocket-Protocol: chat, superchat\r\n"
+    "Sec-WebSocket-Key: HOUd4Hy32TFDnzR541Pw/Q==\r\n"
+    "Origin: http://" WEB_SERVER ":" QUOTE(WEB_PORT) "\r\n"
+    "Sec-WebSocket-Protocol: lighting\r\n"
     "Sec-WebSocket-Version: 13\r\n"
     "User-Agent: esp-idf/1.0 esp32 lightswitch\r\n"
     "\r\n";
@@ -236,9 +239,10 @@ int ws_send_ping(int s)
 
 int ws_send_text(int s, const char* const buffer)
 {
-  ws_write_header(1, OC_TEXT, 1, strlen(buffer));
+  ws_write_header(1, OC_BINARY, 1, strlen(buffer));
   ws_add_masking_key();
   ws_add_masked_data(buffer, strlen(buffer));
+  ws_send_buffer[ws_get_send_length()] = 0;
   return ws_send_frame(s);
 }
 
@@ -262,7 +266,7 @@ static void http_get_task(void *pvParameters)
                             false, true, portMAX_DELAY);
         ESP_LOGI(TAG, "Connected to AP");
 
-        int err = getaddrinfo(WEB_SERVER, "80", &hints, &res);
+        int err = getaddrinfo(WEB_SERVER, QUOTE(WEB_PORT), &hints, &res);
 
         if(err != 0 || res == NULL) {
             ESP_LOGE(TAG, "DNS lookup failed err=%d res=%p", err, res);
@@ -339,14 +343,25 @@ static void http_get_task(void *pvParameters)
         } while(r > 0);
         ESP_LOGI(TAG, "...read a response");
 
-        if (ws_send_text(s, "Hello World") < 0)
+        /*
+        if (ws_send_text(s, "{\"eventType\": \"ConnectRequest\", \"token\": \"9p5cNFsViBtysW4RBtPwemH0ZuLcZUl031i4dP3r\"}") < 0)
         {
-            ESP_LOGE(TAG, "... send text failed");
+            ESP_LOGE(TAG, "... send connect failed");
             close(s);
             vTaskDelay(4000 / portTICK_PERIOD_MS);
             continue;
         }
-        ESP_LOGI(TAG, "... send text success");
+        ESP_LOGI(TAG, "... send connect success");
+        */
+
+        if (ws_send_text(s, "{\"eventType\": \"PatternRequest\", \"patternId\": 2}") < 0)
+        {
+            ESP_LOGE(TAG, "... send request failed");
+            close(s);
+            vTaskDelay(4000 / portTICK_PERIOD_MS);
+            continue;
+        }
+        ESP_LOGI(TAG, "... send request success");
 
         do {
             bzero(recv_buf, sizeof(recv_buf));

@@ -14,4 +14,22 @@ config WIFI_PASSWORD
 
 		Can be left blank if the network has no security set.
 
+config WEB_SERVER
+  string "Websocket Server"
+  default "192.168.0.8"
+  help
+    Websocket server address
+
+config WEB_PORT
+  int "Websocket port number"
+  default 8181
+  help
+    Websocket server port number
+
+config WEB_URL
+  string "Websocket URL"
+  default "/lighting"
+  help
+    Websocket server URL
+
 endmenu
