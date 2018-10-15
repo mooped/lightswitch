@@ -173,6 +173,17 @@ unsigned char ws_send_buffer[1024 * 8];
 
 unsigned char* ws_send_ptr = NULL;
 
+typedef struct
+{
+  uint8_t fin;
+  ws_opcode opcode;
+
+  uint8_t mask_bit;
+  uint32_t payload_len;
+
+  uint32_t mask;
+} ws_header_t;
+
 #define DR_REG_RNG_BASE 0x3ff75144
 uint32_t ws_mask = 0x00000000;
 
@@ -246,9 +257,68 @@ int ws_send_text(int s, const char* const buffer)
         return ws_send_frame(s);
 }
 
+int ws_recv_header(int s, ws_header_t* pHeader)
+{
+  int r = 0;
+  unsigned char* recv_ptr = ws_recv_buffer;
+
+  if (!pHeader) { return -1; }
+
+  // Clear enough of the receive buffer for the header
+  bzero(recv_ptr, sizeof(ws_recv_buffer));
+
+  // Read the first two header bytes
+  r = read(s, recv_ptr, 2);
+  if (r != 2) { return -1; }
+
+  // Fin flag and opcode from the first byte
+  pHeader->fin = recv_ptr[0] & 0x80;
+  pHeader->opcode = recv_ptr[0] & 0x0f;
+
+  // Mask bit and 7 bit payload length field from the second byte
+  pHeader->mask_bit = (recv_ptr[1] & 0x80) ? 1 : 0;
+  pHeader->payload_len = recv_ptr[1] & 0x7f;
+
+  recv_ptr += 2;
+
+  // Read additional message length if necessary
+  if (pHeader->payload_len == 126)
+  {
+    r = read(s, recv_ptr, 2);
+    if (r != 2) { return -1; }
+    pHeader->payload_len = (uint32_t)*((uint16_t*)recv_ptr);
+    recv_ptr += 2;
+  }
+  else if (pHeader->payload_len == 127)
+  {
+    // We can only cope with 32 bit packet length - those 4gb+ packets will get truncated...
+    r = read(s, recv_ptr, 8);
+    if (r != 8) { return -1; }
+    pHeader->payload_len = *((uint32_t*)recv_ptr);
+    recv_ptr += 8;
+  }
+
+  // Read mask if necessary
+  if (pHeader->mask_bit)
+  {
+    r = read(s, recv_ptr, 4);
+    if (r != 4) { return -1; }
+    pHeader->mask = *((uint32_t*)recv_ptr);
+    recv_ptr += 4;
+  }
+
+  return recv_ptr - ws_recv_buffer;
+}
+
+int ws_recv_data(int s, ws_header_t* pHeader, unsigned char* buffer)
+{
+  if (!pHeader) { return -1; }
+  return read(s, buffer, pHeader->payload_len);
+}
+
 #define SWITCH_PIN 23
 
-static void lightswitch_task(void *pvParameters)
+static void hauntspace_task(void *pvParameters)
 {
         const struct addrinfo hints = {
                 .ai_family = AF_INET,
@@ -259,11 +329,8 @@ static void lightswitch_task(void *pvParameters)
         int s, r;
         char recv_buf[64];
 
-        char pattern_request_buffer[256];
-
-        int level;
-
         // Configure GPIO for input
+        /*
         gpio_config_t io_conf;
         io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
         io_conf.mode = GPIO_MODE_INPUT;
@@ -274,21 +341,10 @@ static void lightswitch_task(void *pvParameters)
 
         level = gpio_get_level(SWITCH_PIN);
         ESP_LOGI(TAG, "Initial switch status: %d", level);
+        */
 
-        // Poll and update loop
+        // Connect and listen until disconnected
         do {
-                // Wait until the switch changes state
-                int new_level;
-                do {
-                        new_level = gpio_get_level(SWITCH_PIN);
-                        vTaskDelay(100 / portTICK_PERIOD_MS);
-                        esp_task_wdt_feed();
-                } while (new_level == level);
-
-                level = new_level;
-
-                const int pattern_id = (level == 0) ? 1 /* ALL_OFF */ : 2 /* ALL_ON */;
-
                 /* Wait for the callback to set the CONNECTED_BIT in the
                    event group.
                  */
@@ -305,8 +361,7 @@ static void lightswitch_task(void *pvParameters)
                 }
 
                 /* Code to print the resolved IP.
-
-Note: inet_ntoa is non-reentrant, look at ipaddr_ntoa_r for "real" code */
+                  Note: inet_ntoa is non-reentrant, look at ipaddr_ntoa_r for "real" code */
                 addr = &((struct sockaddr_in *)res->ai_addr)->sin_addr;
                 ESP_LOGI(TAG, "DNS lookup succeeded. IP=%s", inet_ntoa(*addr));
 
@@ -330,13 +385,14 @@ Note: inet_ntoa is non-reentrant, look at ipaddr_ntoa_r for "real" code */
                 ESP_LOGI(TAG, "... connected");
                 freeaddrinfo(res);
 
+                /* Send HTTP request with websocket upgrade header */
                 if (write(s, REQUEST, strlen(REQUEST)) < 0) {
-                        ESP_LOGE(TAG, "... socket send failed");
+                        ESP_LOGE(TAG, "... header send failed");
                         close(s);
                         vTaskDelay(4000 / portTICK_PERIOD_MS);
                         continue;
                 }
-                ESP_LOGI(TAG, "... socket send success");
+                ESP_LOGI(TAG, "... header send success");
 
                 /* Read HTTP response */
                 int nlc = 0;
@@ -371,42 +427,29 @@ Note: inet_ntoa is non-reentrant, look at ipaddr_ntoa_r for "real" code */
                                 if (nlc == 3) { r = 0; }
                         }
                 } while(r > 0);
-                ESP_LOGI(TAG, "...read a response");
+                ESP_LOGI(TAG, "... read response header success");
 
-                /*
-                   if (ws_send_text(s, "{\"eventType\": \"ConnectRequest\", \"token\": \"9p5cNFsViBtysW4RBtPwemH0ZuLcZUl031i4dP3r\"}") < 0)
-                   {
-                   ESP_LOGE(TAG, "... send connect failed");
-                   close(s);
-                   vTaskDelay(4000 / portTICK_PERIOD_MS);
-                   continue;
-                   }
-                   ESP_LOGI(TAG, "... send connect success");
-                 */
-
-                snprintf(pattern_request_buffer, 256, "{\"eventType\": \"PatternRequest\", \"patternId\": %d}", pattern_id);
-                if (ws_send_text(s, pattern_request_buffer) < 0)
+                if (ws_send_text(s, "{\"eventType\": \"ConnectRequest\", \"token\": \"9p5cNFsViBtysW4RBtPwemH0ZuLcZUl031i4dP3r\"}") < 0)
                 {
-                        ESP_LOGE(TAG, "... send request failed");
-                        close(s);
-                        vTaskDelay(4000 / portTICK_PERIOD_MS);
-                        continue;
+                  ESP_LOGE(TAG, "... send connection request failed");
+                  close(s);
+                  vTaskDelay(4000 / portTICK_PERIOD_MS);
+                  continue;
                 }
-                ESP_LOGI(TAG, "... send request success");
+                ESP_LOGI(TAG, "... send connection request success");
 
-                /*
-                   do {
-                   bzero(recv_buf, sizeof(recv_buf));
-                   r = read(s, recv_buf, sizeof(recv_buf)-1);
-                   for(int i = 0; i < r; i++) {
-                   putchar(recv_buf[i]);
-                //ESP_LOGI(TAG, "[%x]", recv_buf[i]);
+                ESP_LOGI(TAG, "waiting for packets ...");
+                ws_header_t header;
+                bzero(&header, sizeof(header));
+                while (ws_recv_header(s, &header) != -1)
+                {
+                  ESP_LOGI(TAG, "... got header");
+                  int recv_len = ws_recv_data(s, &header, ws_recv_buffer);
+                  ws_recv_buffer[recv_len] = '\0';
+                  ESP_LOGI(TAG, "... got data - len: %d payload: %s\r\n", recv_len, ws_recv_buffer);
                 }
-                } while(r > 0);
-                ESP_LOGI(TAG, "...read text response");
-                 */
 
-                ESP_LOGI(TAG, "... done reading from socket. Last read return=%d errno=%d\r\n", r, errno);
+                ESP_LOGI(TAG, "... socket closed. Last read return=%d errno=%d\r\n", r, errno);
                 close(s);
         } while (1);
 }
@@ -415,6 +458,6 @@ void app_main()
 {
         ESP_ERROR_CHECK( nvs_flash_init() );
         initialise_wifi();
-        xTaskCreate(&lightswitch_task, "lightswitch_task", 4096, NULL, 5, NULL);
+        xTaskCreate(&hauntspace_task, "hauntspace_task", 4096, NULL, 5, NULL);
 }
 
