@@ -321,7 +321,7 @@ void ws_swallow_packet(int s)
   ws_header_t header;
   bzero(&header, sizeof(header));
   ESP_LOGI(TAG, "swallowing next packet...");
-  while (ws_recv_header(s, &header) != -1)
+  if (ws_recv_header(s, &header) != -1)
   {
     ESP_LOGI(TAG, "... got header");
     int recv_len = ws_recv_data(s, &header, ws_recv_buffer);
@@ -380,6 +380,7 @@ void boop(void)
 char* room_name = "Blue room";
 unsigned int light_id[]     = {1,2,3,4,5,6,7,8,9};
 unsigned int light_state[]  = {1,1,1,1,1,1,1,1,1};
+const unsigned int num_lights = sizeof(light_id) / sizeof(light_id[0]);
 
 static void hauntspace_task(void *pvParameters)
 {
@@ -506,32 +507,40 @@ static void hauntspace_task(void *pvParameters)
 
                     // Fast approximate JSON parser - please don't look too hard!
                     // Right now this is a great example of how NOT to do this sort of thing...
-                    if (strstr(ws_recv_buffer, "\"LightState\"")) // Is lightState event
+                    if (strstr(ws_recv_buffer, "\"LightState\"")) // Is LightState event
                     {
+                      ESP_LOGI(TAG, "Got LightState ...");
                       if (strstr(ws_recv_buffer, room_name))  // Is our room
                       {
-                        const char* light_id;
+                        ESP_LOGI(TAG, "Got Blue room ...");
+                        const char* id;
                         // Find the light id in the string
-                        if ((light_id = strstr(ws_recv_buffer, "\"light\" :")))
+                        if ((id = strstr(ws_recv_buffer, "\"light\" :")))
                         {
-                          // Super lazy way to parse as integer
-                          int light = atoi(light_id) - 1; // 1 based indexing in the DB, 0 based in our array
+                          ESP_LOGI(TAG, "Got light ...");
+                          // Find the thing after the colon and parse as an integer
+                          int light = atoi(strstr(id, ":") + 1);
+                          ESP_LOGI(TAG, "Got id %d ...", light);
                           // Look for a valid state
                           int state = -1;
                           if (strstr(ws_recv_buffer, "\"state\" : \"OFF\""))
                           {
+                            ESP_LOGI(TAG, "Light is now OFF");
                             state = 0;
                           }
                           else if (strstr(ws_recv_buffer, "\"state\" : \"ON\""))
                           {
+                            ESP_LOGI(TAG, "Light is now ON");
                             state = 1;
                           }
                           if (state >= 0)
                           {
-                            for (int i = 0; i < sizeof(light_id); ++i)
+                            ESP_LOGI(TAG, "Update states ...");
+                            for (int i = 0; i < num_lights; ++i)
                             {
                               if (light == light_id[i])
                               {
+                                ESP_LOGI(TAG, "Got light - check for trigger ...");
                                 light_state[i] = state;
                                 check_states = 1;
                               }
@@ -545,39 +554,45 @@ static void hauntspace_task(void *pvParameters)
                     int do_spooky_thing = 1;
                     if (check_states)
                     {
-                      for (int i = 0; i < sizeof(light_id); ++i)
+                      ESP_LOGI(TAG, "Check states...");
+                      for (int i = 0; i < num_lights; ++i)
                       {
-                        if (light_state[i] == 0)
+                        ESP_LOGI(TAG, "Light: %d State: %d", light_id[i], light_state[i]);
+                        if (light_state[i] == 1)
                         {
                           do_spooky_thing = 0;
                         }
                       }
-                    }
 
-                    // Let's roll!
-                    if (do_spooky_thing)
-                    {
-                      // Send the requests necessary for a good haunting
-                      vTaskDelay(500 / portTICK_PERIOD_MS);
-                      ws_send_text(s, "{\"light\": 7, \"eventType\": \"LightRequest\", \"state\": \"ON\", \"room\": \"Blue room\" }");
-                      boop(); // Trigger spooky noises with servo
-                      vTaskDelay(500 / portTICK_PERIOD_MS);
-                      ws_send_text(s, "{\"light\": 7, \"eventType\": \"LightRequest\", \"state\": \"OFF\", \"room\": \"Blue room\" }");
-                      vTaskDelay(500 / portTICK_PERIOD_MS);
-                      ws_send_text(s, "{\"light\": 2, \"eventType\": \"LightRequest\", \"state\": \"ON\", \"room\": \"Blue room\" }");
-                      vTaskDelay(500 / portTICK_PERIOD_MS);
-                      ws_send_text(s, "{\"light\": 2, \"eventType\": \"LightRequest\", \"state\": \"OFF\", \"room\": \"Blue room\" }");
-                      vTaskDelay(500 / portTICK_PERIOD_MS);
-                      ws_send_text(s, "{\"light\": 9, \"eventType\": \"LightRequest\", \"state\": \"ON\", \"room\": \"Blue room\" }");
-                      vTaskDelay(500 / portTICK_PERIOD_MS);
-                      ws_send_text(s, "{\"light\": 9, \"eventType\": \"LightRequest\", \"state\": \"OFF\", \"room\": \"Blue room\" }");
-                      // Then swallow the responses so we don't retrigger
-                      ws_swallow_packet(s);
-                      ws_swallow_packet(s);
-                      ws_swallow_packet(s);
-                      ws_swallow_packet(s);
-                      ws_swallow_packet(s);
-                      ws_swallow_packet(s);
+                      // Let's roll!
+                      if (do_spooky_thing)
+                      {
+                        ESP_LOGI(TAG, "Spooky time!");
+  
+                        // Send the requests necessary for a good haunting
+                        vTaskDelay(500 / portTICK_PERIOD_MS);
+                        ws_send_text(s, "{\"light\": 7, \"eventType\": \"LightRequest\", \"state\": \"ON\", \"room\": \"Blue room\" }");
+                        boop(); // Trigger spooky noises with servo
+                        vTaskDelay(500 / portTICK_PERIOD_MS);
+                        ws_send_text(s, "{\"light\": 7, \"eventType\": \"LightRequest\", \"state\": \"OFF\", \"room\": \"Blue room\" }");
+                        vTaskDelay(500 / portTICK_PERIOD_MS);
+                        ws_send_text(s, "{\"light\": 2, \"eventType\": \"LightRequest\", \"state\": \"ON\", \"room\": \"Blue room\" }");
+                        vTaskDelay(500 / portTICK_PERIOD_MS);
+                        ws_send_text(s, "{\"light\": 2, \"eventType\": \"LightRequest\", \"state\": \"OFF\", \"room\": \"Blue room\" }");
+                        vTaskDelay(500 / portTICK_PERIOD_MS);
+                        ws_send_text(s, "{\"light\": 9, \"eventType\": \"LightRequest\", \"state\": \"ON\", \"room\": \"Blue room\" }");
+                        vTaskDelay(500 / portTICK_PERIOD_MS);
+                        ws_send_text(s, "{\"light\": 9, \"eventType\": \"LightRequest\", \"state\": \"OFF\", \"room\": \"Blue room\" }");
+                        // Then swallow the responses so we don't retrigger
+                        ws_swallow_packet(s);
+                        ws_swallow_packet(s);
+                        ws_swallow_packet(s);
+                        ws_swallow_packet(s);
+                        ws_swallow_packet(s);
+                        ws_swallow_packet(s);
+  
+                        ESP_LOGI(TAG, "... done spooking!");
+                      }
                     }
                   }
                 }
