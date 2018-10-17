@@ -109,10 +109,10 @@ char hex(unsigned char h)
         return r[h];
 }
 
-void hexdump(const unsigned char* const buffer, int len)
+void hexdump(const char* const buffer, int len)
 {
-        unsigned char dump[len * 3 + 2];
-        unsigned char* ptr = &dump[0];
+        char dump[len * 3 + 2];
+        char* ptr = &dump[0];
 
         *ptr++ = '[';
 
@@ -168,10 +168,10 @@ typedef enum
 } ws_opcode;
 
 // Low level frame building
-unsigned char ws_recv_buffer[1024 * 8];
-unsigned char ws_send_buffer[1024 * 8];
+char ws_recv_buffer[1024 * 8];
+char ws_send_buffer[1024 * 8];
 
-unsigned char* ws_send_ptr = NULL;
+char* ws_send_ptr = NULL;
 
 typedef struct
 {
@@ -260,7 +260,7 @@ int ws_send_text(int s, const char* const buffer)
 int ws_recv_header(int s, ws_header_t* pHeader)
 {
   int r = 0;
-  unsigned char* recv_ptr = ws_recv_buffer;
+  char* recv_ptr = ws_recv_buffer;
 
   if (!pHeader) { return -1; }
 
@@ -310,13 +310,76 @@ int ws_recv_header(int s, ws_header_t* pHeader)
   return recv_ptr - ws_recv_buffer;
 }
 
-int ws_recv_data(int s, ws_header_t* pHeader, unsigned char* buffer)
+int ws_recv_data(int s, ws_header_t* pHeader, char* buffer)
 {
   if (!pHeader) { return -1; }
   return read(s, buffer, pHeader->payload_len);
 }
 
-#define SWITCH_PIN 23
+void ws_swallow_packet(int s)
+{
+  ws_header_t header;
+  bzero(&header, sizeof(header));
+  ESP_LOGI(TAG, "swallowing next packet...");
+  while (ws_recv_header(s, &header) != -1)
+  {
+    ESP_LOGI(TAG, "... got header");
+    int recv_len = ws_recv_data(s, &header, ws_recv_buffer);
+    if (recv_len > 0)
+    {
+      ws_recv_buffer[recv_len] = '\0';
+      ESP_LOGI(TAG, "... got data - len: %d payload: %s\r\n", recv_len, ws_recv_buffer);
+    }
+  }
+}
+
+// Define the pin the servo is attached to
+#define SERVO_PIN 18
+
+void servo_init(void)
+{
+  // Configure GPIO for output
+  gpio_config_t io_conf;
+  io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+  io_conf.mode = GPIO_MODE_OUTPUT;
+  io_conf.pin_bit_mask = (1 << SERVO_PIN);
+  io_conf.pull_down_en = 1;
+  io_conf.pull_up_en = 0;
+  gpio_config(&io_conf);
+
+  // Stop the servo from freaking out
+  gpio_set_level(SERVO_PIN, 0);
+}
+
+void servo_send(int delay)
+{
+  portDISABLE_INTERRUPTS();
+  gpio_set_level(SERVO_PIN, 1);
+  ets_delay_us(delay);
+  gpio_set_level(SERVO_PIN, 0);
+  ets_delay_us(20000 - delay);
+  portENABLE_INTERRUPTS();
+}
+
+// Hit a button with the servo
+void boop(void)
+{
+  int count = 0;
+  for (count = 0; count < 20; ++count)
+  {
+     servo_send(2000);
+  }
+  for (count = 0; count < 20; ++count)
+  {
+     servo_send(1500);
+  }
+}
+
+// Define the lights we care about and track their states
+// Default all of them to on so we don't get false positives
+char* room_name = "Blue room";
+unsigned int light_id[]     = {1,2,3,4,5,6,7,8,9};
+unsigned int light_state[]  = {1,1,1,1,1,1,1,1,1};
 
 static void hauntspace_task(void *pvParameters)
 {
@@ -328,20 +391,6 @@ static void hauntspace_task(void *pvParameters)
         struct in_addr *addr;
         int s, r;
         char recv_buf[64];
-
-        // Configure GPIO for input
-        /*
-        gpio_config_t io_conf;
-        io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
-        io_conf.mode = GPIO_MODE_INPUT;
-        io_conf.pin_bit_mask = (1 << SWITCH_PIN);
-        io_conf.pull_down_en = 0;
-        io_conf.pull_up_en = 1;
-        gpio_config(&io_conf);
-
-        level = gpio_get_level(SWITCH_PIN);
-        ESP_LOGI(TAG, "Initial switch status: %d", level);
-        */
 
         // Connect and listen until disconnected
         do {
@@ -445,8 +494,92 @@ static void hauntspace_task(void *pvParameters)
                 {
                   ESP_LOGI(TAG, "... got header");
                   int recv_len = ws_recv_data(s, &header, ws_recv_buffer);
-                  ws_recv_buffer[recv_len] = '\0';
-                  ESP_LOGI(TAG, "... got data - len: %d payload: %s\r\n", recv_len, ws_recv_buffer);
+                  if (recv_len > 0)
+                  {
+                    ws_recv_buffer[recv_len] = '\0';
+                    ESP_LOGI(TAG, "... got data - len: %d payload: %s\r\n", recv_len, ws_recv_buffer);
+
+                    // Did something change
+                    int check_states = 0;
+
+                    // Got a packet - dig out what we're interested in
+
+                    // Fast approximate JSON parser - please don't look too hard!
+                    // Right now this is a great example of how NOT to do this sort of thing...
+                    if (strstr(ws_recv_buffer, "\"LightState\"")) // Is lightState event
+                    {
+                      if (strstr(ws_recv_buffer, room_name))  // Is our room
+                      {
+                        const char* light_id;
+                        // Find the light id in the string
+                        if ((light_id = strstr(ws_recv_buffer, "\"light\" :")))
+                        {
+                          // Super lazy way to parse as integer
+                          int light = atoi(light_id) - 1; // 1 based indexing in the DB, 0 based in our array
+                          // Look for a valid state
+                          int state = -1;
+                          if (strstr(ws_recv_buffer, "\"state\" : \"OFF\""))
+                          {
+                            state = 0;
+                          }
+                          else if (strstr(ws_recv_buffer, "\"state\" : \"ON\""))
+                          {
+                            state = 1;
+                          }
+                          if (state >= 0)
+                          {
+                            for (int i = 0; i < sizeof(light_id); ++i)
+                            {
+                              if (light == light_id[i])
+                              {
+                                light_state[i] = state;
+                                check_states = 1;
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    // See if we should do the thing
+                    int do_spooky_thing = 1;
+                    if (check_states)
+                    {
+                      for (int i = 0; i < sizeof(light_id); ++i)
+                      {
+                        if (light_state[i] == 0)
+                        {
+                          do_spooky_thing = 0;
+                        }
+                      }
+                    }
+
+                    // Let's roll!
+                    if (do_spooky_thing)
+                    {
+                      // Send the requests necessary for a good haunting
+                      vTaskDelay(500 / portTICK_PERIOD_MS);
+                      ws_send_text(s, "{\"light\": 7, \"eventType\": \"LightRequest\", \"state\": \"ON\", \"room\": \"Blue room\" }");
+                      boop(); // Trigger spooky noises with servo
+                      vTaskDelay(500 / portTICK_PERIOD_MS);
+                      ws_send_text(s, "{\"light\": 7, \"eventType\": \"LightRequest\", \"state\": \"OFF\", \"room\": \"Blue room\" }");
+                      vTaskDelay(500 / portTICK_PERIOD_MS);
+                      ws_send_text(s, "{\"light\": 2, \"eventType\": \"LightRequest\", \"state\": \"ON\", \"room\": \"Blue room\" }");
+                      vTaskDelay(500 / portTICK_PERIOD_MS);
+                      ws_send_text(s, "{\"light\": 2, \"eventType\": \"LightRequest\", \"state\": \"OFF\", \"room\": \"Blue room\" }");
+                      vTaskDelay(500 / portTICK_PERIOD_MS);
+                      ws_send_text(s, "{\"light\": 9, \"eventType\": \"LightRequest\", \"state\": \"ON\", \"room\": \"Blue room\" }");
+                      vTaskDelay(500 / portTICK_PERIOD_MS);
+                      ws_send_text(s, "{\"light\": 9, \"eventType\": \"LightRequest\", \"state\": \"OFF\", \"room\": \"Blue room\" }");
+                      // Then swallow the responses so we don't retrigger
+                      ws_swallow_packet(s);
+                      ws_swallow_packet(s);
+                      ws_swallow_packet(s);
+                      ws_swallow_packet(s);
+                      ws_swallow_packet(s);
+                      ws_swallow_packet(s);
+                    }
+                  }
                 }
 
                 ESP_LOGI(TAG, "... socket closed. Last read return=%d errno=%d\r\n", r, errno);
@@ -456,8 +589,19 @@ static void hauntspace_task(void *pvParameters)
 
 void app_main()
 {
-        ESP_ERROR_CHECK( nvs_flash_init() );
-        initialise_wifi();
-        xTaskCreate(&hauntspace_task, "hauntspace_task", 4096, NULL, 5, NULL);
+  ESP_ERROR_CHECK( nvs_flash_init() );
+
+  // Initialise and center the servo
+  servo_init();
+  for (int count = 0; count < 10; ++count)
+  {
+    servo_send(1500);
+  }
+
+  // Initialise WiFi
+  initialise_wifi();
+
+  // Haunt the space
+  xTaskCreate(&hauntspace_task, "hauntspace_task", 4096, NULL, 5, NULL);
 }
 
