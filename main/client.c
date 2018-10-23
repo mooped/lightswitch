@@ -287,7 +287,11 @@ static void lightswitch_task(void *pvParameters)
 
                 level = new_level;
 
-                const int pattern_id = (level == 0) ? 1 /* ALL_OFF */ : 2 /* ALL_ON */;
+                // BLUE ROOM ON - 3
+                // BLUE ROOM OFF - 26
+                // CNC ROOM ON - 4
+                // CNC ROOM OFF - 32
+                const int pattern_id = (level == 0) ? 32 /* OFF */ : 4 /* ON */;
 
                 /* Wait for the callback to set the CONNECTED_BIT in the
                    event group.
