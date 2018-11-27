@@ -367,7 +367,7 @@ void boop(void)
   int count = 0;
   for (count = 0; count < 20; ++count)
   {
-     servo_send(2000);
+     servo_send(1000);
   }
   for (count = 0; count < 20; ++count)
   {
@@ -515,7 +515,7 @@ static void hauntspace_task(void *pvParameters)
                         ESP_LOGI(TAG, "Got Blue room ...");
                         const char* id;
                         // Find the light id in the string
-                        if ((id = strstr(ws_recv_buffer, "\"light\" :")))
+                        if ((id = strstr(ws_recv_buffer, "\"light\":")))
                         {
                           ESP_LOGI(TAG, "Got light ...");
                           // Find the thing after the colon and parse as an integer
@@ -523,12 +523,12 @@ static void hauntspace_task(void *pvParameters)
                           ESP_LOGI(TAG, "Got id %d ...", light);
                           // Look for a valid state
                           int state = -1;
-                          if (strstr(ws_recv_buffer, "\"state\" : \"OFF\""))
+                          if (strstr(ws_recv_buffer, "\"state\":\"OFF\""))
                           {
                             ESP_LOGI(TAG, "Light is now OFF");
                             state = 0;
                           }
-                          else if (strstr(ws_recv_buffer, "\"state\" : \"ON\""))
+                          else if (strstr(ws_recv_buffer, "\"state\":\"ON\""))
                           {
                             ESP_LOGI(TAG, "Light is now ON");
                             state = 1;
