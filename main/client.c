@@ -262,14 +262,49 @@ typedef struct {
 
 switch_t switches[] = {
   {
-    .name = "Workshop On",
-    .pin = 23,
-    .pattern = 4,
+    .name = "Dusty On",
+    .pin = 33,
+    .pattern = 186,
   },
   {
-    .name = "Workshop Off",
-    .pin = 24,
-    .pattern = 32
+    .name = "Workshop All On",
+    .pin = 25,
+    .pattern = 139,
+  },
+  {
+    .name = "Workshop All Off",
+    .pin = 26,
+    .pattern = 142
+  },
+  {
+    .name = "Woodwork On",
+    .pin = 23,
+    .pattern = 204
+  },
+  {
+    .name = "Metalwork On",
+    .pin = 22,
+    .pattern = 192
+  },
+  {
+    .name = "Walk Way Far On",
+    .pin = 21,
+    .pattern = 174
+  },
+  {
+    .name = "Walk Way Near On",
+    .pin = 19,
+    .pattern = 168
+  },
+  {
+    .name = "Laser On",
+    .pin = 18,
+    .pattern = 180
+  },
+  {
+    .name = "Workshop All Off",
+    .pin = 26,
+    .pattern = 142
   }
 };
 
@@ -288,6 +323,8 @@ static void lightswitch_task(void *pvParameters)
 
   char pattern_request_buffer[256];
 
+  ESP_LOGI(TAG, "Initialising switches...");
+
   // Configure each GPIO for input
   {
     for (int switch_idx = 0; switch_idx < NUM_SWITCHES; ++switch_idx)
@@ -297,7 +334,7 @@ static void lightswitch_task(void *pvParameters)
       gpio_config_t io_conf;
       io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
       io_conf.mode = GPIO_MODE_INPUT;
-      io_conf.pin_bit_mask = (1 << pin);
+      io_conf.pin_bit_mask = ((uint64_t)1 << pin);
       io_conf.pull_down_en = 0;
       io_conf.pull_up_en = 1;
       gpio_config(&io_conf);
