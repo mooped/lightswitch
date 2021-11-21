@@ -248,177 +248,228 @@ int ws_send_text(int s, const char* const buffer)
 
 #define SWITCH_PIN 23
 
+typedef struct {
+  const char* const name; // Name of this switch
+  uint8_t pin;            // Pin the switch is attached to
+  int pattern;            // Pattern to send when the switch is pressed
+} switch_t;
+
+typedef struct {
+  uint8_t level;          // State of the switch
+} state_t;
+
+#define NUM_SWITCHES (sizeof(switches) / sizeof(switch_t))
+
+switch_t switches[] = {
+  {
+    .name = "Workshop On",
+    .pin = 23,
+    .pattern = 4,
+  },
+  {
+    .name = "Workshop Off",
+    .pin = 24,
+    .pattern = 32
+  }
+};
+
+state_t states[NUM_SWITCHES] = { 0 };
+
 static void lightswitch_task(void *pvParameters)
 {
-        const struct addrinfo hints = {
-                .ai_family = AF_INET,
-                .ai_socktype = SOCK_STREAM,
-        };
-        struct addrinfo *res;
-        struct in_addr *addr;
-        int s, r;
-        char recv_buf[64];
+  const struct addrinfo hints = {
+    .ai_family = AF_INET,
+    .ai_socktype = SOCK_STREAM,
+  };
+  struct addrinfo *res;
+  struct in_addr *addr;
+  int s, r;
+  char recv_buf[64];
 
-        char pattern_request_buffer[256];
+  char pattern_request_buffer[256];
 
-        int level;
+  // Configure each GPIO for input
+  {
+    for (int switch_idx = 0; switch_idx < NUM_SWITCHES; ++switch_idx)
+    {
+      const int pin = switches[switch_idx].pin;
 
-        // Configure GPIO for input
-        gpio_config_t io_conf;
-        io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
-        io_conf.mode = GPIO_MODE_INPUT;
-        io_conf.pin_bit_mask = (1 << SWITCH_PIN);
-        io_conf.pull_down_en = 0;
-        io_conf.pull_up_en = 1;
-        gpio_config(&io_conf);
+      gpio_config_t io_conf;
+      io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+      io_conf.mode = GPIO_MODE_INPUT;
+      io_conf.pin_bit_mask = (1 << pin);
+      io_conf.pull_down_en = 0;
+      io_conf.pull_up_en = 1;
+      gpio_config(&io_conf);
 
-        level = gpio_get_level(SWITCH_PIN);
-        ESP_LOGI(TAG, "Initial switch status: %d", level);
+      const int level = gpio_get_level(pin);
+      states[switch_idx].level = level;
 
-        // Poll and update loop
-        do {
-                // Wait until the switch changes state
-                int new_level;
-                do {
-                        new_level = gpio_get_level(SWITCH_PIN);
-                        vTaskDelay(100 / portTICK_PERIOD_MS);
-                        esp_task_wdt_feed();
-                } while (new_level == level);
+      ESP_LOGI(TAG, "Initial status of switch %s: %d", switches[switch_idx].name, level);
+    }
+  }
 
-                level = new_level;
+  // Poll and update loop
+  do {
+    // Wait until any switch changes state
+    int state_change = 0;
 
-                // BLUE ROOM ON - 3
-                // BLUE ROOM OFF - 26
-                // CNC ROOM ON - 4
-                // CNC ROOM OFF - 32
-                const int pattern_id = (level == 0) ? 32 /* OFF */ : 4 /* ON */;
+    // Pattern to send
+    int pattern_id = 0;
 
-                /* Wait for the callback to set the CONNECTED_BIT in the
-                   event group.
-                 */
-                xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT,
-                                false, true, portMAX_DELAY);
-                ESP_LOGI(TAG, "Connected to AP");
+    do {
+      // Scan the switches for a low going state change
+      for (int switch_idx = 0; switch_idx < NUM_SWITCHES; ++switch_idx)
+      {
+        const int pin = switches[switch_idx].pin;
+        const int new_level = gpio_get_level(pin);
+        if (new_level != states[switch_idx].level)
+        {
+          states[switch_idx].level = new_level;
 
-                int err = getaddrinfo(WEB_SERVER, QUOTE(WEB_PORT), &hints, &res);
+          ESP_LOGI(TAG, "Switch %s %s.", switches[switch_idx].name, new_level ? "released" : "pressed");
 
-                if(err != 0 || res == NULL) {
-                        ESP_LOGE(TAG, "DNS lookup failed err=%d res=%p", err, res);
-                        vTaskDelay(1000 / portTICK_PERIOD_MS);
-                        continue;
-                }
+          // Switch pressed
+          if (new_level == 0)
+          {
+            // Stop scanning and send the pattern for this switch
+            state_change = 1;
+            pattern_id = switches[switch_idx].pattern;
+            break;
+          }
+        }
+      }
 
-                /* Code to print the resolved IP.
+      vTaskDelay(100 / portTICK_PERIOD_MS);
+      esp_task_wdt_feed();
+    } while (!state_change);
 
-Note: inet_ntoa is non-reentrant, look at ipaddr_ntoa_r for "real" code */
-                addr = &((struct sockaddr_in *)res->ai_addr)->sin_addr;
-                ESP_LOGI(TAG, "DNS lookup succeeded. IP=%s", inet_ntoa(*addr));
+    /* Wait for the callback to set the CONNECTED_BIT in the
+       event group.
+       */
+    xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT,
+        false, true, portMAX_DELAY);
+    ESP_LOGI(TAG, "Connected to AP");
 
-                s = socket(res->ai_family, res->ai_socktype, 0);
-                if(s < 0) {
-                        ESP_LOGE(TAG, "... Failed to allocate socket.");
-                        freeaddrinfo(res);
-                        vTaskDelay(1000 / portTICK_PERIOD_MS);
-                        continue;
-                }
-                ESP_LOGI(TAG, "... allocated socket\r\n");
+    int err = getaddrinfo(WEB_SERVER, QUOTE(WEB_PORT), &hints, &res);
 
-                if(connect(s, res->ai_addr, res->ai_addrlen) != 0) {
-                        ESP_LOGE(TAG, "... socket connect failed errno=%d", errno);
-                        close(s);
-                        freeaddrinfo(res);
-                        vTaskDelay(4000 / portTICK_PERIOD_MS);
-                        continue;
-                }
+    if(err != 0 || res == NULL) {
+      ESP_LOGE(TAG, "DNS lookup failed err=%d res=%p", err, res);
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+      continue;
+    }
 
-                ESP_LOGI(TAG, "... connected");
-                freeaddrinfo(res);
+    /* Code to print the resolved IP.
+      Note: inet_ntoa is non-reentrant, look at ipaddr_ntoa_r for "real" code
+    */
+    addr = &((struct sockaddr_in *)res->ai_addr)->sin_addr;
+    ESP_LOGI(TAG, "DNS lookup succeeded. IP=%s", inet_ntoa(*addr));
 
-                if (write(s, REQUEST, strlen(REQUEST)) < 0) {
-                        ESP_LOGE(TAG, "... socket send failed");
-                        close(s);
-                        vTaskDelay(4000 / portTICK_PERIOD_MS);
-                        continue;
-                }
-                ESP_LOGI(TAG, "... socket send success");
+    s = socket(res->ai_family, res->ai_socktype, 0);
+    if(s < 0) {
+      ESP_LOGE(TAG, "... Failed to allocate socket.");
+      freeaddrinfo(res);
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+      continue;
+    }
+    ESP_LOGI(TAG, "... allocated socket\r\n");
 
-                /* Read HTTP response */
-                int nlc = 0;
-                do {
-                        bzero(recv_buf, sizeof(recv_buf));
-                        r = read(s, recv_buf, sizeof(recv_buf)-1);
-                        for(int i = 0; i < r; i++) {
-                                putchar(recv_buf[i]);
-                                //ESP_LOGI(TAG, "... nlc: %d c: %x", nlc, send_buf[i]);
-                                if (nlc % 2 == 0)
-                                {
-                                        if (recv_buf[i] == '\r')
-                                        {
-                                                ++nlc;
-                                        }
-                                        else
-                                        {
-                                                nlc = 0;
-                                        }
-                                }
-                                else if (nlc % 2 == 1)
-                                {
-                                        if (recv_buf[i] == '\n')
-                                        {
-                                                ++nlc;
-                                        }
-                                        else
-                                        {
-                                                nlc = 0;
-                                        }
-                                }
-                                if (nlc == 3) { r = 0; }
-                        }
-                } while(r > 0);
-                ESP_LOGI(TAG, "...read a response");
+    if(connect(s, res->ai_addr, res->ai_addrlen) != 0) {
+      ESP_LOGE(TAG, "... socket connect failed errno=%d", errno);
+      close(s);
+      freeaddrinfo(res);
+      vTaskDelay(4000 / portTICK_PERIOD_MS);
+      continue;
+    }
 
-                /*
-                   if (ws_send_text(s, "{\"eventType\": \"ConnectRequest\", \"token\": \"9p5cNFsViBtysW4RBtPwemH0ZuLcZUl031i4dP3r\"}") < 0)
-                   {
-                   ESP_LOGE(TAG, "... send connect failed");
-                   close(s);
-                   vTaskDelay(4000 / portTICK_PERIOD_MS);
-                   continue;
-                   }
-                   ESP_LOGI(TAG, "... send connect success");
-                 */
+    ESP_LOGI(TAG, "... connected");
+    freeaddrinfo(res);
 
-                snprintf(pattern_request_buffer, 256, "{\"eventType\": \"PatternRequest\", \"patternId\": %d}", pattern_id);
-                if (ws_send_text(s, pattern_request_buffer) < 0)
-                {
-                        ESP_LOGE(TAG, "... send request failed");
-                        close(s);
-                        vTaskDelay(4000 / portTICK_PERIOD_MS);
-                        continue;
-                }
-                ESP_LOGI(TAG, "... send request success");
+    if (write(s, REQUEST, strlen(REQUEST)) < 0) {
+      ESP_LOGE(TAG, "... socket send failed");
+      close(s);
+      vTaskDelay(4000 / portTICK_PERIOD_MS);
+      continue;
+    }
+    ESP_LOGI(TAG, "... socket send success");
 
-                /*
-                   do {
-                   bzero(recv_buf, sizeof(recv_buf));
-                   r = read(s, recv_buf, sizeof(recv_buf)-1);
-                   for(int i = 0; i < r; i++) {
-                   putchar(recv_buf[i]);
-                //ESP_LOGI(TAG, "[%x]", recv_buf[i]);
-                }
-                } while(r > 0);
-                ESP_LOGI(TAG, "...read text response");
-                 */
+    /* Read HTTP response */
+    int nlc = 0;
+    do {
+      bzero(recv_buf, sizeof(recv_buf));
+      r = read(s, recv_buf, sizeof(recv_buf)-1);
+      for(int i = 0; i < r; i++) {
+        putchar(recv_buf[i]);
+        //ESP_LOGI(TAG, "... nlc: %d c: %x", nlc, send_buf[i]);
+        if (nlc % 2 == 0)
+        {
+          if (recv_buf[i] == '\r')
+          {
+            ++nlc;
+          }
+          else
+          {
+            nlc = 0;
+          }
+        }
+        else if (nlc % 2 == 1)
+        {
+          if (recv_buf[i] == '\n')
+          {
+            ++nlc;
+          }
+          else
+          {
+            nlc = 0;
+          }
+        }
+        if (nlc == 3) { r = 0; }
+      }
+    } while(r > 0);
+    ESP_LOGI(TAG, "...read a response");
 
-                ESP_LOGI(TAG, "... done reading from socket. Last read return=%d errno=%d\r\n", r, errno);
-                close(s);
-        } while (1);
+    /*
+       if (ws_send_text(s, "{\"eventType\": \"ConnectRequest\", \"token\": \"9p5cNFsViBtysW4RBtPwemH0ZuLcZUl031i4dP3r\"}") < 0)
+       {
+       ESP_LOGE(TAG, "... send connect failed");
+       close(s);
+       vTaskDelay(4000 / portTICK_PERIOD_MS);
+       continue;
+       }
+       ESP_LOGI(TAG, "... send connect success");
+       */
+
+    snprintf(pattern_request_buffer, 256, "{\"eventType\": \"PatternRequest\", \"patternId\": %d}", pattern_id);
+    if (ws_send_text(s, pattern_request_buffer) < 0)
+    {
+      ESP_LOGE(TAG, "... send request failed");
+      close(s);
+      vTaskDelay(4000 / portTICK_PERIOD_MS);
+      continue;
+    }
+    ESP_LOGI(TAG, "... send request success");
+
+    /*
+       do {
+       bzero(recv_buf, sizeof(recv_buf));
+       r = read(s, recv_buf, sizeof(recv_buf)-1);
+       for(int i = 0; i < r; i++) {
+       putchar(recv_buf[i]);
+    //ESP_LOGI(TAG, "[%x]", recv_buf[i]);
+    }
+    } while(r > 0);
+    ESP_LOGI(TAG, "...read text response");
+    */
+
+    ESP_LOGI(TAG, "... done reading from socket. Last read return=%d errno=%d\r\n", r, errno);
+    close(s);
+  } while (1);
 }
 
 void app_main()
 {
-        ESP_ERROR_CHECK( nvs_flash_init() );
-        initialise_wifi();
-        xTaskCreate(&lightswitch_task, "lightswitch_task", 4096, NULL, 5, NULL);
+  ESP_ERROR_CHECK( nvs_flash_init() );
+  initialise_wifi();
+  xTaskCreate(&lightswitch_task, "lightswitch_task", 4096, NULL, 5, NULL);
 }
 
