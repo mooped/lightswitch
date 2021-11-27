@@ -23,6 +23,25 @@
 #include "lwip/netdb.h"
 #include "lwip/dns.h"
 
+#define LED_PIN 27
+
+static void led_init(void)
+{
+  // Configure the pin for the LED
+  gpio_config_t io_conf;
+  io_conf.intr_type = GPIO_PIN_INTR_DISABLE;
+  io_conf.mode = GPIO_MODE_OUTPUT;
+  io_conf.pin_bit_mask = ((uint64_t)1 << LED_PIN);
+  io_conf.pull_down_en = 0;
+  io_conf.pull_up_en = 0;
+  gpio_config(&io_conf);
+}
+
+static void led_set(int level)
+{
+  gpio_set_level(LED_PIN, level);
+}
+
 /* The examples use simple WiFi configuration that you can set via
    'make menuconfig'.
 
@@ -354,6 +373,9 @@ static void lightswitch_task(void *pvParameters)
     // Pattern to send
     int pattern_id = 0;
 
+    // LED off while waiting for input
+    led_set(0);
+
     do {
       // Scan the switches for a low going state change
       for (int switch_idx = 0; switch_idx < NUM_SWITCHES; ++switch_idx)
@@ -380,6 +402,9 @@ static void lightswitch_task(void *pvParameters)
       vTaskDelay(100 / portTICK_PERIOD_MS);
       esp_task_wdt_feed();
     } while (!state_change);
+
+    // LED on while sending the request
+    led_set(1);
 
     /* Wait for the callback to set the CONNECTED_BIT in the
        event group.
@@ -506,7 +531,15 @@ static void lightswitch_task(void *pvParameters)
 void app_main()
 {
   ESP_ERROR_CHECK( nvs_flash_init() );
+
+  // LED on once we're initialising
+  led_init();
+  led_set(1);
+
   initialise_wifi();
   xTaskCreate(&lightswitch_task, "lightswitch_task", 4096, NULL, 5, NULL);
+
+  // LED off once we're initialised
+  led_set(0);
 }
 
