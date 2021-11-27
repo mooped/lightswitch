@@ -267,14 +267,20 @@ int ws_send_text(int s, const char* const buffer)
 
 #define SWITCH_PIN 23
 
+#define SWITCH_FLAG_ALL_ON   1
+#define SWITCH_FLAG_ALL_OFF  2
+
 typedef struct {
   const char* const name; // Name of this switch
   uint8_t pin;            // Pin the switch is attached to
-  int pattern;            // Pattern to send when the switch is pressed
+  int pattern_on;         // Pattern to send to turn lights on
+  int pattern_off;        // Pattern to send to turn lights off
+  int flags;              // Flags bitfield
 } switch_t;
 
 typedef struct {
   uint8_t level;          // State of the switch
+  uint8_t state;          // The last known state of the lights
 } state_t;
 
 #define NUM_SWITCHES (sizeof(switches) / sizeof(switch_t))
@@ -283,51 +289,70 @@ switch_t switches[] = {
   {
     .name = "Dusty On",
     .pin = 33,
-    .pattern = 186,
+    .pattern_on = 186,
+    .pattern_off = 186,
+    .flags = 0,
   },
   {
     .name = "Workshop All On",
     .pin = 25,
-    .pattern = 139,
+    .pattern_on = 139,
+    .pattern_off = 139,
+    .flags = SWITCH_FLAG_ALL_ON,
   },
   {
     .name = "Workshop All Off",
     .pin = 26,
-    .pattern = 142
+    .pattern_on = 142,
+    .pattern_off = 142,
+    .flags = SWITCH_FLAG_ALL_OFF,
   },
   {
     .name = "Woodwork On",
     .pin = 23,
-    .pattern = 204
+    .pattern_on = 204,
+    .pattern_off = 204,
+    .flags = 0,
   },
   {
     .name = "Metalwork On",
     .pin = 22,
-    .pattern = 192
+    .pattern_on = 192,
+    .pattern_off = 192,
+    .flags = 0,
   },
   {
     .name = "Walk Way Far On",
     .pin = 21,
-    .pattern = 174
+    .pattern_on = 174,
+    .pattern_off = 174,
+    .flags = 0,
   },
   {
     .name = "Walk Way Near On",
     .pin = 19,
-    .pattern = 168
+    .pattern_on = 168,
+    .pattern_off = 168,
+    .flags = 0,
   },
   {
     .name = "Laser On",
     .pin = 18,
-    .pattern = 180
-  },
-  {
-    .name = "Workshop All Off",
-    .pin = 26,
-    .pattern = 142
+    .pattern_on = 180,
+    .pattern_off = 180,
+    .flags = 0,
   }
 };
 
 state_t states[NUM_SWITCHES] = { 0 };
+
+void lightswitch_set_all_states(int state)
+{
+  for (int state_idx = 0; state_idx < NUM_SWITCHES; ++state_idx)
+  {
+    states[state_idx].state = state;
+  }
+}
 
 static void lightswitch_task(void *pvParameters)
 {
@@ -393,7 +418,36 @@ static void lightswitch_task(void *pvParameters)
           {
             // Stop scanning and send the pattern for this switch
             state_change = 1;
-            pattern_id = switches[switch_idx].pattern;
+
+            if (states[switch_idx].state)
+            {
+              // Light is on, needs to be off
+              pattern_id = switches[switch_idx].pattern_off;
+
+              // Update the last known state of the lights
+              states[switch_idx].state = 0;
+            }
+            else
+            {
+              // Light is off, needs to be on
+              pattern_id = switches[switch_idx].pattern_on;
+
+              // Update the last known state of the lights
+              states[switch_idx].state = 1;
+            }
+
+            // Update the last known state of all lights if necessary
+            if (switches[switch_idx].flags & SWITCH_FLAG_ALL_ON)
+            {
+              lightswitch_set_all_states(1);
+              ESP_LOGI(TAG, "Set all states to ON.");
+            }
+            else if (switches[switch_idx].flags & SWITCH_FLAG_ALL_OFF)
+            {
+              lightswitch_set_all_states(0);
+              ESP_LOGI(TAG, "Set all states to OFF.");
+            }
+
             break;
           }
         }
@@ -405,6 +459,9 @@ static void lightswitch_task(void *pvParameters)
 
     // LED on while sending the request
     led_set(1);
+
+    // Print out the pattern we're sending
+    ESP_LOGI(TAG, "Sending pattern id %d...", pattern_id);
 
     /* Wait for the callback to set the CONNECTED_BIT in the
        event group.
