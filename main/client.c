@@ -290,7 +290,7 @@ switch_t switches[] = {
     .name = "Dusty On",
     .pin = 33,
     .pattern_on = 186,
-    .pattern_off = 186,
+    .pattern_off = 189,
     .flags = 0,
   },
   {
@@ -311,35 +311,35 @@ switch_t switches[] = {
     .name = "Woodwork On",
     .pin = 23,
     .pattern_on = 204,
-    .pattern_off = 204,
+    .pattern_off = 207,
     .flags = 0,
   },
   {
     .name = "Metalwork On",
     .pin = 22,
     .pattern_on = 192,
-    .pattern_off = 192,
+    .pattern_off = 195,
     .flags = 0,
   },
   {
     .name = "Walk Way Far On",
-    .pin = 21,
+    .pin = 16, // was 21
     .pattern_on = 174,
-    .pattern_off = 174,
+    .pattern_off = 177,
     .flags = 0,
   },
   {
     .name = "Walk Way Near On",
     .pin = 19,
     .pattern_on = 168,
-    .pattern_off = 168,
+    .pattern_off = 171,
     .flags = 0,
   },
   {
     .name = "Laser On",
     .pin = 18,
     .pattern_on = 180,
-    .pattern_off = 180,
+    .pattern_off = 183,
     .flags = 0,
   }
 };
